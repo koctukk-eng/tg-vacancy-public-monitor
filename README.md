@@ -34,12 +34,18 @@ matches to your bot. GitHub runs the check automatically every 3 hours
 
 ## What you'll need
 
-- A **Telegram account** (you already have one if you're reading this on Telegram)
+- A **Telegram account**
 - A **free GitHub account** — sign up at [github.com](https://github.com) if
   you don't have one yet (~2 minutes, just an email and password)
 - About **20-25 minutes** total, most of it in step 4
 
 No credit card, no paid tools, anywhere in this process.
+
+💡 **Tip:** do this from a computer, with the **Telegram Desktop app**
+open next to GitHub in your browser. You'll be copying a long bot token
+and a chat_id back and forth a couple of times — that's a quick
+copy-paste between two windows, versus typing a long string by hand off
+a phone screen or sending it to yourself to move between devices.
 
 ## Quick start (checklist)
 
