@@ -26,8 +26,10 @@ and chat_id, passed in as environment variables (in GitHub Actions, via
 Secrets).
 """
 
+import hashlib
 import json
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -46,6 +48,19 @@ USER_AGENT = (
 )
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 MAX_SEEN_FEED_IDS = 500  # cap per feed, so seen_ids.json doesn't grow forever
+MAX_SENT_HASHES = 1000  # cap for cross-source dedup hashes
+
+
+def content_hash(text: str) -> str:
+    """Hash of normalized post text, used to deduplicate the same vacancy
+    reposted across multiple channels/feeds. Normalization strips URLs,
+    @mentions, hashtags, punctuation and whitespace differences, so
+    near-identical reposts collapse into the same hash."""
+    normalized = text.lower()
+    normalized = re.sub(r"https?://\S+", "", normalized)  # links differ per repost
+    normalized = re.sub(r"[@#]\w+", "", normalized)  # channel tags differ per repost
+    normalized = re.sub(r"[^\w]+", "", normalized, flags=re.UNICODE)  # keep letters/digits only
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -157,8 +172,15 @@ def process_channel(channel: str, seen: dict, include_keywords: list[str], exclu
     matches = 0
     for post in new_posts:
         if matches_filters(post["text"], include_keywords, exclude_keywords):
+            h = content_hash(post["text"])
+            sent_hashes = seen.setdefault("_sent_hashes", [])
+            if h in sent_hashes:
+                print(f"[INFO] {channel}: skipping duplicate of an already-sent vacancy")
+                continue
             message = f"🎯 New match in @{channel}\n\n{post['text'][:800]}\n\n{post['url']}"
             send_telegram_message(message)
+            sent_hashes.append(h)
+            del sent_hashes[:-MAX_SENT_HASHES]
             matches += 1
             time.sleep(1)  # avoid hammering the Telegram API
 
@@ -237,8 +259,15 @@ def process_feed(feed_url: str, name: str, seen: dict, include_keywords: list[st
     matches = 0
     for item in new_items:
         if matches_filters(item["text"], include_keywords, exclude_keywords):
+            h = content_hash(item["text"])
+            sent_hashes = seen.setdefault("_sent_hashes", [])
+            if h in sent_hashes:
+                print(f"[INFO] {name}: skipping duplicate of an already-sent vacancy")
+                continue
             message = f"🎯 New match on {name}\n\n{item['text'][:800]}\n\n{item['url']}"
             send_telegram_message(message)
+            sent_hashes.append(h)
+            del sent_hashes[:-MAX_SENT_HASHES]
             matches += 1
             time.sleep(1)
 
