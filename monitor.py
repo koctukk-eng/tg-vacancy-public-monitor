@@ -63,7 +63,7 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+CHAT_IDS = [c.strip() for c in (os.environ.get("CHAT_ID") or "").split(",") if c.strip()]
 
 
 def load_config() -> dict:
@@ -83,34 +83,52 @@ def save_seen(seen: dict) -> None:
         json.dump(seen, f, ensure_ascii=False, indent=2)
 
 
-def matches_filters(text: str, include_keywords: list[str], exclude_keywords: list[str]) -> bool:
+def matches_filters(text: str, include_keywords: list, exclude_keywords: list[str]) -> bool:
+    """
+    include_keywords elements can be:
+    - a plain string: matches if it appears anywhere in the text (OR)
+    - a list of strings: matches only if ALL of them appear somewhere in
+      the text, in any order (AND) — use this for ambiguous generic
+      titles that need an extra qualifier to avoid false positives,
+      e.g. ["product manager", "automotive"] instead of the bare,
+      cross-industry "product manager".
+    """
     if not text:
         return False
     lowered = text.lower()
     if any(bad.lower() in lowered for bad in exclude_keywords):
         return False
-    return any(good.lower() in lowered for good in include_keywords)
+
+    for keyword in include_keywords:
+        if isinstance(keyword, list):
+            if all(part.lower() in lowered for part in keyword):
+                return True
+        else:
+            if keyword.lower() in lowered:
+                return True
+    return False
 
 
 def send_telegram_message(text: str) -> None:
-    if not BOT_TOKEN or not CHAT_ID:
+    if not BOT_TOKEN or not CHAT_IDS:
         print("[WARN] BOT_TOKEN / CHAT_ID not set — message not sent.")
         print(text)
         return
     api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        resp = requests.post(
-            api_url,
-            data={
-                "chat_id": CHAT_ID,
-                "text": text,
-                "disable_web_page_preview": False,
-            },
-            timeout=20,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        print(f"[WARN] Failed to send Telegram message: {e}")
+    for chat_id in CHAT_IDS:
+        try:
+            resp = requests.post(
+                api_url,
+                data={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "disable_web_page_preview": False,
+                },
+                timeout=20,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            print(f"[WARN] Failed to send Telegram message to {chat_id}: {e}")
 
 
 # --- Telegram channels ---
