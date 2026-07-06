@@ -1,117 +1,334 @@
-# Prompt to generate your own config.json
+"""
+Monitors public Telegram channels — and, optionally, RSS feeds from
+job boards — for postings matching your keywords.
 
-Copy the prompt below into a new chat with Claude (or another LLM with
-web search access), fill in the bracketed fields for your own situation,
-and send it.
+How it works:
+1. Telegram channels (config.json -> "channels"): fetch each channel's
+   public web preview page (https://t.me/s/<channel>) — works without
+   login and without the Telegram API, because the channel is public.
+2. RSS/Atom feeds (config.json -> "feeds", optional): fetch and parse
+   each feed with the standard library (no extra dependency). This is
+   meant for legitimate job boards that publish official public RSS
+   feeds (e.g. remote-work boards) — NOT for scraping mainstream sites
+   like LinkedIn or Indeed, which prohibit scraping in their terms of
+   service. Leave "feeds" empty (or omit it) if you only want Telegram
+   channels — the rest of the script behaves exactly as before.
+3. Filter each post/item: it must contain at least one of the
+   include_keywords and none of the exclude_keywords.
+4. Send new (not yet seen) matches to your personal Telegram bot.
+5. Store progress in seen_ids.json, so nothing is sent twice and
+   nothing is skipped between runs.
+6. At the end of every run, ALWAYS send a summary status message, even
+   if zero new matches were found.
 
-Why a prompt instead of ready-made presets: a channel/keyword list tuned
-for, say, marketing is useless for a QA engineer or a Data Scientist —
-the communities, niches, and even the language of postings differ too
-much. Instead of guessing on your behalf, this prompt reproduces the
-actual research-and-verification process for whatever your criteria are.
+This script does not store or use any payment data — only the bot token
+and chat_id, passed in as environment variables (in GitHub Actions, via
+Secrets).
+"""
 
-**A heads-up on language/market:** English-language Telegram channels
-with job postings are, in practice, far less numerous than Russian-language
-ones — the Telegram vacancy-channel ecosystem skews heavily CIS/Russian.
-That's exactly why the prompt below also asks about RSS feeds from job
-boards, not just Telegram — for English-speaking/international markets,
-that combination will realistically find you more than Telegram alone.
+import hashlib
+import json
+import os
+import re
+import time
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from pathlib import Path
 
----
+import requests
+from bs4 import BeautifulSoup
 
-```
-You're helping me build a configuration for a bot that monitors Telegram
-channels and, optionally, RSS feeds from job boards, sending me postings
-that match specific criteria. The final output must be valid JSON in
-exactly this structure:
+CONFIG_PATH = Path(__file__).parent / "config.json"
+SEEN_PATH = Path(__file__).parent / "seen_ids.json"
 
-{
-  "channels": ["channel_username_1", "channel_username_2"],
-  "feeds": [{"name": "Board Name", "url": "https://example.com/feed.rss"}],
-  "include_keywords": ["keyword or phrase 1", "..."],
-  "exclude_keywords": ["stop word 1", "..."]
-}
+TELEGRAM_PREVIEW_URL = "https://t.me/s/{channel}"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+ATOM_NS = "{http://www.w3.org/2005/Atom}"
+MAX_SEEN_FEED_IDS = 500  # cap per feed, so seen_ids.json doesn't grow forever
+MAX_SENT_HASHES = 1000  # cap for cross-source dedup hashes
 
-("feeds" can be an empty array if I don't want any — see my answer below.)
 
-My criteria:
-- Role/profession: [e.g. QA Engineer, Backend Developer (Python),
-  Data Scientist, Product Manager...]
-- Synonyms/adjacent titles that also count: [...]
-- Seniority (junior/mid/senior/doesn't matter): [...]
-- Work format: [remote / hybrid / office / any]
-- Employment type: [full-time / part-time / contract / any]
-- Target market/geography of companies: [worldwide / specific
-  country or region / ...]
-- Language of postings: [English / other / any]
-- Niches/industries I want to AVOID, if any: [e.g. gambling,
-  crypto scams, MLM, specific companies...]
-- Also include RSS feeds from job boards, in addition to Telegram
-  channels? [yes / no / not sure — recommend based on my market]
-- Anything else worth knowing: [...]
+def content_hash(text: str) -> str:
+    """Hash of normalized post text, used to deduplicate the same vacancy
+    reposted across multiple channels/feeds. Normalization strips URLs,
+    @mentions, hashtags, punctuation and whitespace differences, so
+    near-identical reposts collapse into the same hash."""
+    normalized = text.lower()
+    normalized = re.sub(r"https?://\S+", "", normalized)  # links differ per repost
+    normalized = re.sub(r"[@#]\w+", "", normalized)  # channel tags differ per repost
+    normalized = re.sub(r"[^\w]+", "", normalized, flags=re.UNICODE)  # keep letters/digits only
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
-Please do the following, step by step:
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_IDS = [c.strip() for c in (os.environ.get("CHAT_ID") or "").split(",") if c.strip()]
 
-1. If anything above is missing or unclear, ask me clarifying questions
-   first — don't guess on my behalf. If I said "not sure" about RSS
-   feeds, recommend yes/no based on how well-covered my target market
-   is likely to be on Telegram (English-speaking/international markets
-   are sparser on Telegram, so RSS feeds help more there; CIS/Russian-
-   language markets are usually well covered by Telegram alone).
 
-2. Find 15-30 relevant Telegram channels via web search, searching in
-   several directions:
-   - channels specifically dedicated to this profession/niche
-   - broad general job-vacancy aggregator channels matching the target
-     market/language
-   - relocation/international-jobs hub channels, if relevant to the market
-   - adjacent professional communities where relevant postings might
-     also appear
+def load_config() -> dict:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-3. CRITICALLY IMPORTANT — verify each Telegram channel individually via
-   search before adding it to the list:
-   - the channel exists and is active (not abandoned or renamed)
-   - it is genuinely a PUBLIC BROADCAST CHANNEL, not a group chat — groups
-     do not have a public web preview (t.me/s/...), and the reading method
-     this bot relies on does not work for them
-   - do not add a channel "just in case" or by name-pattern guessing
-     without direct confirmation it actually exists — a short list of
-     working channels beats a long list that's half dead
 
-4. If I asked for RSS feeds: find job boards relevant to my role/market
-   that publish an OFFICIAL PUBLIC RSS OR ATOM FEED (many remote-work-
-   focused job boards do this explicitly). For each candidate:
-   - verify by fetching the feed URL directly that it returns valid
-     RSS/Atom XML with real, current job listings — don't guess a
-     plausible-looking URL without checking it actually works
-   - do NOT include mainstream platforms like LinkedIn or Indeed — they
-     prohibit automated scraping in their terms of service, and this bot
-     is only meant to read sources that explicitly publish an open feed
-     for this purpose
+def load_seen() -> dict:
+    if SEEN_PATH.exists():
+        with open(SEEN_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
-5. Build include_keywords: exact job titles + synonyms (including other
-   languages, if the market is international) + terms/tools/platforms
-   characteristic of the profession. Avoid overly generic single words
-   that will catch a lot of irrelevant noise.
 
-6. Build exclude_keywords: think about whether this profession has an
-   adjacent-but-unwanted niche (similar to how, in marketing, there's a
-   whole separate "traffic arbitrage" world involving gambling/crypto
-   scams that looks similar but is usually unwanted) — and add terms
-   characteristic of that niche as stop words.
+def save_seen(seen: dict) -> None:
+    with open(SEEN_PATH, "w", encoding="utf-8") as f:
+        json.dump(seen, f, ensure_ascii=False, indent=2)
 
-7. Output the final result ONLY as valid JSON in a code block, with no
-   other text inside it — I'll paste it straight into config.json.
-```
 
----
+def matches_filters(text: str, include_keywords: list, exclude_keywords: list[str]) -> bool:
+    """
+    include_keywords elements can be:
+    - a plain string: matches if it appears anywhere in the text (OR)
+    - a list of strings: matches only if ALL of them appear somewhere in
+      the text, in any order (AND) — use this for ambiguous generic
+      titles that need an extra qualifier to avoid false positives,
+      e.g. ["product manager", "automotive"] instead of the bare,
+      cross-industry "product manager".
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(bad.lower() in lowered for bad in exclude_keywords):
+        return False
 
-**After you get the result:** paste the JSON into your repo's
-`config.json`, commit it, and run **Test Setup** (Actions tab) — it will
-show you which of the suggested channels and feeds are actually
-reachable, and which aren't. If some aren't working, you can go back to
-the same chat and ask for a replacement.
+    for keyword in include_keywords:
+        if isinstance(keyword, list):
+            if all(part.lower() in lowered for part in keyword):
+                return True
+        else:
+            if keyword.lower() in lowered:
+                return True
+    return False
 
-You can reuse this prompt later too — e.g. to expand the channel/feed
-list, tune keywords after seeing the first real results, or rebuild the
-whole config for a different role.
+
+def send_telegram_message(text: str) -> None:
+    if not BOT_TOKEN or not CHAT_IDS:
+        print("[WARN] BOT_TOKEN / CHAT_ID not set — message not sent.")
+        print(text)
+        return
+    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    for chat_id in CHAT_IDS:
+        try:
+            resp = requests.post(
+                api_url,
+                data={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "disable_web_page_preview": False,
+                },
+                timeout=20,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            print(f"[WARN] Failed to send Telegram message to {chat_id}: {e}")
+
+
+# --- Telegram channels ---
+
+
+def fetch_channel_posts(channel: str) -> list[dict]:
+    """Returns a list of channel posts: [{id, text, url}, ...], oldest to newest."""
+    url = TELEGRAM_PREVIEW_URL.format(channel=channel)
+    try:
+        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"[WARN] Failed to load channel {channel}: {e}")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    posts = []
+    for msg in soup.select("div.tgme_widget_message"):
+        post_id_attr = msg.get("data-post")  # format "channel/1234"
+        if not post_id_attr:
+            continue
+        post_id = post_id_attr.split("/")[-1]
+
+        text_el = msg.select_one(".tgme_widget_message_text")
+        text = text_el.get_text(separator="\n").strip() if text_el else ""
+
+        posts.append(
+            {
+                "id": int(post_id),
+                "text": text,
+                "url": f"https://t.me/{channel}/{post_id}",
+            }
+        )
+
+    if not posts:
+        print(f"[WARN] {channel}: 0 posts received (channel not found, private, or preview disabled)")
+
+    posts.sort(key=lambda p: p["id"])
+    return posts
+
+
+def process_channel(channel: str, seen: dict, include_keywords: list[str], exclude_keywords: list[str]) -> int:
+    posts = fetch_channel_posts(channel)
+    if not posts:
+        return 0
+
+    last_seen_id = seen.get(channel)
+
+    if last_seen_id is None:
+        # First run for this channel: just record the current max post id
+        # as a baseline, so we don't dump a pile of old posts on you.
+        max_id = max(p["id"] for p in posts)
+        seen[channel] = max_id
+        print(f"[INFO] {channel}: baseline set (id={max_id})")
+        return 0
+
+    new_posts = [p for p in posts if p["id"] > last_seen_id]
+
+    matches = 0
+    for post in new_posts:
+        if matches_filters(post["text"], include_keywords, exclude_keywords):
+            h = content_hash(post["text"])
+            sent_hashes = seen.setdefault("_sent_hashes", [])
+            if h in sent_hashes:
+                print(f"[INFO] {channel}: skipping duplicate of an already-sent vacancy")
+                continue
+            message = f"🎯 New match in @{channel}\n\n{post['text'][:800]}\n\n{post['url']}"
+            send_telegram_message(message)
+            sent_hashes.append(h)
+            del sent_hashes[:-MAX_SENT_HASHES]
+            matches += 1
+            time.sleep(1)  # avoid hammering the Telegram API
+
+    if new_posts:
+        seen[channel] = max(p["id"] for p in new_posts)
+
+    return matches
+
+
+# --- RSS / Atom feeds (job boards that publish an official public feed) ---
+
+
+def fetch_feed_items(feed_url: str) -> list[dict]:
+    """Returns a list of feed items: [{id, text, url}, ...]. Supports both
+    RSS 2.0 (<item>) and Atom (<entry>) formats."""
+    try:
+        resp = requests.get(feed_url, headers={"User-Agent": USER_AGENT}, timeout=20)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"[WARN] Failed to load feed {feed_url}: {e}")
+        return []
+
+    try:
+        root = ET.fromstring(resp.content)
+    except ET.ParseError as e:
+        print(f"[WARN] Feed {feed_url} is not valid XML: {e}")
+        return []
+
+    items = []
+
+    # RSS 2.0: <rss><channel><item>...
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        description = (item.findtext("description") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        guid = (item.findtext("guid") or link).strip()
+        if guid:
+            items.append({"id": guid, "text": f"{title}\n{description}", "url": link or guid})
+
+    # Atom: <feed><entry>...
+    for entry in root.findall(f".//{ATOM_NS}entry"):
+        title = (entry.findtext(f"{ATOM_NS}title") or "").strip()
+        summary = (
+            entry.findtext(f"{ATOM_NS}summary") or entry.findtext(f"{ATOM_NS}content") or ""
+        ).strip()
+        link_el = entry.find(f"{ATOM_NS}link")
+        link = link_el.get("href", "") if link_el is not None else ""
+        entry_id = (entry.findtext(f"{ATOM_NS}id") or link).strip()
+        if entry_id:
+            items.append({"id": entry_id, "text": f"{title}\n{summary}", "url": link or entry_id})
+
+    if not items:
+        print(f"[WARN] {feed_url}: 0 items parsed (unsupported feed format, or feed is empty)")
+
+    return items
+
+
+def process_feed(feed_url: str, name: str, seen: dict, include_keywords: list[str], exclude_keywords: list[str]) -> int:
+    items = fetch_feed_items(feed_url)
+    if not items:
+        return 0
+
+    feeds_seen = seen.setdefault("_feeds", {})
+    seen_ids = feeds_seen.get(feed_url)
+
+    if seen_ids is None:
+        # First run for this feed: record current items as baseline, don't
+        # send anything yet.
+        feeds_seen[feed_url] = [item["id"] for item in items][-MAX_SEEN_FEED_IDS:]
+        print(f"[INFO] {name}: baseline set ({len(items)} items)")
+        return 0
+
+    seen_ids_set = set(seen_ids)
+    new_items = [item for item in items if item["id"] not in seen_ids_set]
+
+    matches = 0
+    for item in new_items:
+        if matches_filters(item["text"], include_keywords, exclude_keywords):
+            h = content_hash(item["text"])
+            sent_hashes = seen.setdefault("_sent_hashes", [])
+            if h in sent_hashes:
+                print(f"[INFO] {name}: skipping duplicate of an already-sent vacancy")
+                continue
+            message = f"🎯 New match on {name}\n\n{item['text'][:800]}\n\n{item['url']}"
+            send_telegram_message(message)
+            sent_hashes.append(h)
+            del sent_hashes[:-MAX_SENT_HASHES]
+            matches += 1
+            time.sleep(1)
+
+    updated_ids = (seen_ids + [item["id"] for item in new_items])[-MAX_SEEN_FEED_IDS:]
+    feeds_seen[feed_url] = updated_ids
+
+    return matches
+
+
+def main() -> None:
+    config = load_config()
+    seen = load_seen()
+
+    channels = config.get("channels", [])
+    feeds = config.get("feeds", [])
+    include_keywords = config["include_keywords"]
+    exclude_keywords = config["exclude_keywords"]
+
+    total_new_matches = 0
+
+    for channel in channels:
+        total_new_matches += process_channel(channel, seen, include_keywords, exclude_keywords)
+
+    for feed in feeds:
+        # A feed entry can be a plain URL string, or {"name": ..., "url": ...}
+        if isinstance(feed, str):
+            feed_url, name = feed, feed
+        else:
+            feed_url = feed["url"]
+            name = feed.get("name", feed_url)
+        total_new_matches += process_feed(feed_url, name, seen, include_keywords, exclude_keywords)
+
+    save_seen(seen)
+    print(f"[INFO] Done. New matching vacancies sent: {total_new_matches}")
+
+    # Final status — always sent, even if 0 matches were found
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    status_text = (
+        f"✅ Check complete ({now_str})\n"
+        f"Matching vacancies found: {total_new_matches}"
+    )
+    send_telegram_message(status_text)
+
+
+if __name__ == "__main__":
+    main()
