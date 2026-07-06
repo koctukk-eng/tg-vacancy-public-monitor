@@ -63,9 +63,47 @@ def check_config() -> dict:
 
 def check_bot() -> None:
     print("\n== 2. Checking bot (BOT_TOKEN / CHAT_ID) ==")
-    if not BOT_TOKEN or not CHAT_ID:
-        print("❌ BOT_TOKEN and/or CHAT_ID are not set.")
+    if not BOT_TOKEN:
+        print("❌ BOT_TOKEN is not set.")
         print("   Check: Settings → Secrets and variables → Actions in your repo")
+        sys.exit(1)
+
+    if not CHAT_ID:
+        # CHAT_ID not set yet — try to auto-detect it from getUpdates.
+        print("ℹ️  CHAT_ID is not set — trying to detect it automatically...")
+        try:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates", timeout=20
+            )
+            data = resp.json()
+        except requests.RequestException as e:
+            print(f"❌ Could not reach the Telegram API: {e}")
+            sys.exit(1)
+
+        if not data.get("ok"):
+            print(f"❌ Telegram API rejected the request: {data}")
+            print("   Most likely the BOT_TOKEN is wrong — recheck it in your secrets.")
+            sys.exit(1)
+
+        chat_ids = {}
+        for update in data.get("result", []):
+            msg = update.get("message")
+            if msg and msg.get("chat", {}).get("type") == "private":
+                chat = msg["chat"]
+                chat_ids[chat["id"]] = chat.get("first_name", "") or chat.get("username", "")
+
+        if not chat_ids:
+            print("❌ No messages found. Open Telegram, send your bot any message")
+            print("   (e.g. 'hello'), then re-run this Test Setup workflow.")
+            sys.exit(1)
+
+        print("✅ Found the following chat_id(s) from messages sent to your bot:")
+        for cid, name in chat_ids.items():
+            print(f"   chat_id: {cid}   (from: {name})")
+        print()
+        print("   → Copy your chat_id from above and add it as a CHAT_ID secret:")
+        print("     Settings → Secrets and variables → Actions → New repository secret")
+        print("   Then re-run this Test Setup workflow to confirm everything works.")
         sys.exit(1)
 
     try:
