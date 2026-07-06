@@ -1,8 +1,17 @@
 # Prompt to generate your own config.json
 
 Copy the prompt below into a new chat with Claude (or another LLM with
-web search access), fill in the bracketed fields for your own situation,
-and send it.
+web search access), fill in your answers, and send it.
+
+**The only part you need to edit is the "My criteria" block** — every
+line where your input is expected is marked like this:
+
+```
+>>> YOUR ANSWER HERE (hints in parentheses) <<<
+```
+
+Replace each `>>> ... <<<` marker (including the arrows themselves) with
+your answer. Everything else in the prompt stays as is — don't edit it.
 
 Why a prompt instead of ready-made presets: a channel/keyword list tuned
 for, say, marketing is useless for a QA engineer or a Data Scientist —
@@ -47,30 +56,50 @@ Note the two kinds of include_keywords entries:
   "project manager", which alone would match IT, marketing, finance
   and every other industry)
 
-My criteria:
-- Role/profession: [e.g. QA Engineer, Backend Developer (Python),
-  Data Scientist, Product Manager...]
-- Synonyms/adjacent titles that also count: [...]
-- Seniority (junior/mid/senior/doesn't matter): [...]
-- Work format: [remote / hybrid / office / any]
-- Employment type: [full-time / part-time / contract / any]
-- Target market/geography of companies: [worldwide / specific
-  country or region / ...]
-- Language of postings: [English / other / any]
-- Niches/industries I want to AVOID, if any: [e.g. gambling,
-  crypto scams, MLM, specific companies...]
-- Also include RSS feeds from job boards, in addition to Telegram
-  channels? [yes / no / not sure — recommend based on my market]
-- Anything else worth knowing: [...]
+========================== MY CRITERIA ==========================
+Fill in every >>> ... <<< line below. Leave the rest of the prompt
+untouched.
+
+- Role/profession:
+  >>> YOUR ANSWER (e.g. QA Engineer, Backend Developer, Data Scientist) <<<
+
+- Synonyms/adjacent titles that also count:
+  >>> YOUR ANSWER (or "none") <<<
+
+- Seniority:
+  >>> YOUR ANSWER (junior / mid / senior / doesn't matter) <<<
+
+- Work format:
+  >>> YOUR ANSWER (remote / hybrid / office / any) <<<
+
+- Employment type:
+  >>> YOUR ANSWER (full-time / part-time / contract / any) <<<
+
+- Target market/geography of companies:
+  >>> YOUR ANSWER (worldwide / specific country or region) <<<
+
+- Language of postings:
+  >>> YOUR ANSWER (English / other / any) <<<
+
+- Niches/industries I want to AVOID, if any:
+  >>> YOUR ANSWER (e.g. gambling, MLM, specific companies — or "none") <<<
+
+- Also include RSS feeds from job boards, in addition to Telegram channels?
+  >>> YOUR ANSWER (yes / no / not sure — recommend based on my market) <<<
+
+- Anything else worth knowing:
+  >>> YOUR ANSWER (or "nothing") <<<
+==================================================================
 
 Please do the following, step by step:
 
-1. If anything above is missing or unclear, ask me clarifying questions
-   first — don't guess on my behalf. If I said "not sure" about RSS
-   feeds, recommend yes/no based on how well-covered my target market
-   is likely to be on Telegram (English-speaking/international markets
-   are sparser on Telegram, so RSS feeds help more there; CIS/Russian-
-   language markets are usually well covered by Telegram alone).
+1. If any >>> ... <<< marker above was left unfilled, or an answer is
+   unclear, ask me clarifying questions first — don't guess on my
+   behalf. If I said "not sure" about RSS feeds, recommend yes/no based
+   on how well-covered my target market is likely to be on Telegram
+   (English-speaking/international markets are sparser on Telegram, so
+   RSS feeds help more there; CIS/Russian-language markets are usually
+   well covered by Telegram alone).
 
 2. Find 15-30 relevant Telegram channels via web search, searching in
    several directions:
