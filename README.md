@@ -135,7 +135,11 @@ Open `config.json` directly on GitHub (the pencil icon):
 - `channels` — list of channel usernames (no `@`, just the name)
 - `feeds` — optional list of RSS/Atom job board feeds, each as
   `{"name": "...", "url": "..."}` (or a plain URL string)
-- `include_keywords` — at least one of these must appear in a post
+- `include_keywords` — each entry is either a plain string (matches if
+  it appears anywhere in a post) or a list of strings like
+  `["product manager", "automotive"]` (matches only if ALL parts appear
+  in the same post — use this for generic titles that exist across many
+  industries, so you don't get flooded with irrelevant matches)
 - `exclude_keywords` — stop words: if even one is present, the post is discarded
 
 Changes take effect automatically on the next run.
